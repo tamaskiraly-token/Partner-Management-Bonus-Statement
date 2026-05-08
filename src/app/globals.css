@@ -21,15 +21,14 @@ body {
 
 /* Print/PDF styling */
 @page {
-  size: A4;
+  size: A4 landscape;
   margin: 8mm;
 }
 
 @media print {
   /* Some browsers only honor @page rules inside the print media query. */
   @page {
-    /* Use portrait here to avoid Microsoft Print to PDF rotation on save. */
-    size: 210mm 297mm;
+    size: 297mm 210mm;
     margin: 8mm;
   }
 
@@ -40,6 +39,8 @@ body {
   body {
     background: #ffffff !important;
     margin: 0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   /* Hide everything except the statement area */
@@ -62,18 +63,15 @@ body {
     padding: 0 !important;
     position: static !important;
     background: #ffffff !important;
+    width: 100% !important;
+    max-width: none !important;
   }
 
   #statement-root {
     box-shadow: none !important;
     margin: 0 !important;
-    /* Portrait canvas to match PDF driver output */
-    width: 210mm; /* A4 portrait width */
-    max-width: 210mm;
-    zoom: 1;
-    transform-origin: top left;
-    /* Scale down to fit wide tables on portrait pages */
-    transform: scale(0.72);
+    width: 100% !important;
+    max-width: none !important;
     /* Allow multi-page PDFs (don't force single page). */
     page-break-inside: auto;
   }
@@ -83,11 +81,13 @@ body {
     min-height: auto !important;
     padding: 0 !important;
     flex: none !important;
+    width: 100% !important;
+    max-width: none !important;
   }
 
   /* Keep tabular layouts stable in print */
   #statement-root table {
-    table-layout: fixed !important;
+    table-layout: auto !important;
     min-width: 0 !important; /* prevent right-edge clipping in PDF */
     width: 100% !important;
   }
