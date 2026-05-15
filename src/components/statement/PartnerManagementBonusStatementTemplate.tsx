@@ -5,14 +5,39 @@ import type { QuarterId } from "@/lib/quarters";
 import { formatCurrency } from "@/lib/templateFormatting";
 
 const REVENUE_CURRENCY = "USD";
-const QUARTERLY_OTE_GBP = 4000;
-const THRESHOLD_PCT = 0.8;
+
+type PmBonusRules = {
+  thresholdPct: number;
+  quarterlyOte: number;
+};
+
+const DEFAULT_BONUS_RULES: PmBonusRules = {
+  thresholdPct: 0.8,
+  quarterlyOte: 4000,
+};
+
+function normalizePmName(name: string): string {
+  return name.trim().replace(/\s+/g, " ").replace(/\.$/, "");
+}
+
+function bonusRulesForPartnerManager(partnerManager: string): PmBonusRules {
+  if (normalizePmName(partnerManager) === "JACKSON, Matt") {
+    return { thresholdPct: 0.9, quarterlyOte: 15000 };
+  }
+  return DEFAULT_BONUS_RULES;
+}
+
+function showNewBusinessWinsPayout(partnerManager: string): boolean {
+  return normalizePmName(partnerManager) !== "JACKSON, Matt";
+}
+
+function isGodillierTracey(partnerManager: string): boolean {
+  return normalizePmName(partnerManager).toUpperCase() === "GODILLIER, TRACEY";
+}
 
 function payoutCurrencyForPartnerManager(partnerManager: string): string {
-  // Special-case per request:
-  // - GODILIER, Tracey: EUR payout
-  // - everyone else: GBP payout
-  return partnerManager === "GODILIER, Tracey" ? "EUR" : "GBP";
+  if (!partnerManager || partnerManager === "ALL") return "GBP";
+  return isGodillierTracey(partnerManager) ? "EUR" : "GBP";
 }
 
 function formatRevenueUSD(n: number): string {
@@ -50,8 +75,8 @@ type QuarterCalc = {
   achievement: number; // 0..inf
   isAboveThreshold: boolean;
   payoutPct: number; // 0..inf
-  payoutBeforeRevenueCapGBP: number;
-  payoutGBP: number;
+  payoutBeforeCap: number;
+  payout: number;
   revenueCapApplied: boolean;
   quarterlyCapApplied: boolean;
 };
@@ -65,7 +90,7 @@ type FullYearCalc = {
   ytdActual: number;
   ytdAchievement: number;
   q4TrueUpEligible: boolean;
-  q4TrueUpGBP: number;
+  q4TrueUp: number;
 };
 
 function monthKeyToQuarterKey(monthKey: MonthKey): QuarterKey | null {
@@ -101,8 +126,10 @@ function calcQuarterForPm(args: {
   quarter: QuarterId;
   monthKeys: MonthKey[];
   rowsForPm: PmBonusClientRow[];
+  bonusRules: PmBonusRules;
 }): QuarterCalc {
-  const { quarter, monthKeys, rowsForPm } = args;
+  const { quarter, monthKeys, rowsForPm, bonusRules } = args;
+  const { thresholdPct, quarterlyOte } = bonusRules;
   const quarterKey = quarterIdToQuarterKey(quarter);
   const quarterMonthKeys = monthKeys.filter((mk) => monthKeyToQuarterKey(mk) === quarterKey);
 
@@ -119,10 +146,10 @@ function calcQuarterForPm(args: {
   }
 
   const achievement = target > 0 ? actual / target : 0;
-  const isAboveThreshold = achievement >= THRESHOLD_PCT;
+  const isAboveThreshold = achievement >= thresholdPct;
 
   // Base linear payout:
-  // - below 80% -> 0
+  // - below threshold -> 0
   // - Q1–Q3 capped at 100%
   // - Q4 uncapped
   const isQ4 = quarterKey === "Q4";
@@ -130,8 +157,8 @@ function calcQuarterForPm(args: {
   const payoutPctCapped = isQ4 ? payoutPctRaw : Math.min(payoutPctRaw, 1);
   const quarterlyCapApplied = !isQ4 && payoutPctRaw > 1;
 
-  const payoutBeforeRevenueCapGBP = payoutPctCapped * QUARTERLY_OTE_GBP;
-  const payoutRevenueCappedGBP = payoutBeforeRevenueCapGBP;
+  const payoutBeforeCap = payoutPctCapped * quarterlyOte;
+  const payoutAmount = payoutBeforeCap;
   const revenueCapApplied = false;
 
   return {
@@ -142,8 +169,8 @@ function calcQuarterForPm(args: {
     achievement,
     isAboveThreshold,
     payoutPct: payoutPctCapped,
-    payoutBeforeRevenueCapGBP,
-    payoutGBP: payoutRevenueCappedGBP,
+    payoutBeforeCap,
+    payout: payoutAmount,
     revenueCapApplied,
     quarterlyCapApplied,
   };
@@ -153,14 +180,15 @@ function calcFullYearForPm(args: {
   quarter: QuarterId;
   monthKeys: MonthKey[];
   rowsForPm: PmBonusClientRow[];
+  bonusRules: PmBonusRules;
 }): { fullYear: FullYearCalc; quarters: Record<QuarterKey, QuarterCalc> } {
-  const { quarter, monthKeys, rowsForPm } = args;
+  const { quarter, monthKeys, rowsForPm, bonusRules } = args;
 
   const quarters: Record<QuarterKey, QuarterCalc> = {
-    Q1: calcQuarterForPm({ quarter: "2026Q1", monthKeys, rowsForPm }),
-    Q2: calcQuarterForPm({ quarter: "2026Q2", monthKeys, rowsForPm }),
-    Q3: calcQuarterForPm({ quarter: "2026Q3", monthKeys, rowsForPm }),
-    Q4: calcQuarterForPm({ quarter: "2026Q4", monthKeys, rowsForPm }),
+    Q1: calcQuarterForPm({ quarter: "2026Q1", monthKeys, rowsForPm, bonusRules }),
+    Q2: calcQuarterForPm({ quarter: "2026Q2", monthKeys, rowsForPm, bonusRules }),
+    Q3: calcQuarterForPm({ quarter: "2026Q3", monthKeys, rowsForPm, bonusRules }),
+    Q4: calcQuarterForPm({ quarter: "2026Q4", monthKeys, rowsForPm, bonusRules }),
   };
 
   const fullYearTarget = quarters.Q1.target + quarters.Q2.target + quarters.Q3.target + quarters.Q4.target;
@@ -190,9 +218,9 @@ function calcFullYearForPm(args: {
   const ytdAchievement = ytdTarget > 0 ? ytdActual / ytdTarget : 0;
 
   const q4TrueUpEligible = activeQuarterKey === "Q4" && fullYearTargetMet;
-  const alreadyPaidQ1toQ3 = quarters.Q1.payoutGBP + quarters.Q2.payoutGBP + quarters.Q3.payoutGBP;
-  const maxOteQ1toQ3 = 3 * QUARTERLY_OTE_GBP;
-  const q4TrueUpGBP = q4TrueUpEligible ? Math.max(0, maxOteQ1toQ3 - alreadyPaidQ1toQ3) : 0;
+  const alreadyPaidQ1toQ3 = quarters.Q1.payout + quarters.Q2.payout + quarters.Q3.payout;
+  const maxOteQ1toQ3 = 3 * bonusRules.quarterlyOte;
+  const q4TrueUp = q4TrueUpEligible ? Math.max(0, maxOteQ1toQ3 - alreadyPaidQ1toQ3) : 0;
 
   return {
     quarters,
@@ -205,7 +233,7 @@ function calcFullYearForPm(args: {
       ytdActual,
       ytdAchievement,
       q4TrueUpEligible,
-      q4TrueUpGBP,
+      q4TrueUp,
     },
   };
 }
@@ -235,7 +263,15 @@ function Section({ id, title, children }: { id: string; title: string; children:
   );
 }
 
-function OteQuarterTable({ calc, payoutCurrency }: { calc: QuarterCalc; payoutCurrency: string }) {
+function OteQuarterTable({
+  calc,
+  payoutCurrency,
+  thresholdPct,
+}: {
+  calc: QuarterCalc;
+  payoutCurrency: string;
+  thresholdPct: number;
+}) {
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
       <table className="w-full min-w-[680px] border-collapse table-fixed">
@@ -245,8 +281,10 @@ function OteQuarterTable({ calc, payoutCurrency }: { calc: QuarterCalc; payoutCu
             <th className="w-[140px] px-3 py-2 font-semibold">Target</th>
             <th className="w-[140px] px-3 py-2 font-semibold">Actual</th>
             <th className="w-[120px] px-3 py-2 font-semibold">Achievement</th>
-            <th className="w-[160px] px-3 py-2 font-semibold">Threshold (80%)</th>
-            <th className="w-[200px] px-3 py-2 font-semibold">OTE payout</th>
+            <th className="w-[160px] px-3 py-2 font-semibold">
+              Threshold ({(thresholdPct * 100).toFixed(0)}%)
+            </th>
+            <th className="w-[200px] px-3 py-2 font-semibold">OTE payout ({payoutCurrency})</th>
           </tr>
         </thead>
         <tbody>
@@ -263,7 +301,7 @@ function OteQuarterTable({ calc, payoutCurrency }: { calc: QuarterCalc; payoutCu
               )}
             </td>
             <td className="px-3 py-2 tabular-nums font-bold text-slate-900">
-              {formatCurrency(Math.round(calc.payoutGBP), payoutCurrency)}
+              {formatCurrency(Math.round(calc.payout), payoutCurrency)}
               {calc.quarterlyCapApplied ? <span className="ml-2 text-slate-500 font-semibold">(capped at 100%)</span> : null}
               {calc.revenueCapApplied ? <span className="ml-2 text-slate-500 font-semibold">(capped by revenue)</span> : null}
             </td>
@@ -282,6 +320,11 @@ function monthKeyToLabel(monthKey: MonthKey): string {
   const name = names[mm - 1] ?? monthKey;
   return `${name} ${year}`;
 }
+
+const BREAKDOWN_NUM_CELL = "px-2 py-2 tabular-nums text-right whitespace-nowrap";
+const BREAKDOWN_NUM_HEAD = "px-2 py-2 font-semibold text-right whitespace-nowrap";
+const BREAKDOWN_QTR_SECTION_START = "border-l-2 border-slate-300 bg-slate-50";
+const BREAKDOWN_QTR_SECTION_CELL = "bg-slate-50";
 
 function QuarterlyClientBreakdownTable({
   quarter,
@@ -310,39 +353,73 @@ function QuarterlyClientBreakdownTable({
 
   const totalAchievement = totals.target > 0 ? totals.actual / totals.target : 0;
 
+  const monthColTarget = 76;
+  const monthColActual = 76;
+  const monthColDiff = 72;
+  const quarterColTarget = 82;
+  const quarterColActual = 82;
+  const quarterColAch = 52;
+  const clientColWidth = 96;
+  const tableMinWidth =
+    clientColWidth +
+    quarterMonthKeys.length * (monthColTarget + monthColActual + monthColDiff) +
+    quarterColTarget +
+    quarterColActual +
+    quarterColAch;
+
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <table className="w-full border-collapse table-fixed text-[10px]">
+    <table
+      className="w-full table-fixed border-collapse text-[10px]"
+      style={{ minWidth: tableMinWidth }}
+    >
+        <colgroup>
+          <col style={{ width: clientColWidth }} />
+          {quarterMonthKeys.flatMap((mk) => [
+            <col key={`${mk}-target`} style={{ width: monthColTarget }} />,
+            <col key={`${mk}-actual`} style={{ width: monthColActual }} />,
+            <col key={`${mk}-diff`} style={{ width: monthColDiff }} />,
+          ])}
+          {/* Quarter columns share remaining width; no fixed width so table fills container */}
+          <col />
+          <col />
+          <col />
+        </colgroup>
         <thead>
-          <tr className="bg-slate-50 text-left text-[11px] text-slate-600">
-            <th className="w-[160px] px-3 py-2 font-semibold" rowSpan={2}>
+          <tr className="bg-slate-50 text-[11px] text-slate-600">
+            <th
+              className="max-w-[96px] px-2 py-2 text-left font-semibold"
+              rowSpan={2}
+            >
               Client
             </th>
             {quarterMonthKeys.map((mk) => (
               <th
                 key={`${mk}-group`}
-                className="px-3 py-2 font-semibold text-center border-l border-slate-300"
+                className="border-l border-slate-300 px-2 py-2 text-center font-semibold"
                 colSpan={3}
               >
                 {monthKeyToLabel(mk)}
               </th>
             ))}
-            <th className="w-[130px] px-3 py-2 font-semibold text-center border-l border-slate-300" rowSpan={2}>
+            <th
+              className={`${BREAKDOWN_QTR_SECTION_START} px-2 py-2 text-right font-semibold`}
+              rowSpan={2}
+            >
               Quarter target
             </th>
-            <th className="w-[130px] px-3 py-2 font-semibold text-center" rowSpan={2}>
+            <th className={`${BREAKDOWN_QTR_SECTION_CELL} px-2 py-2 text-right font-semibold`} rowSpan={2}>
               Quarter actual
             </th>
-            <th className="w-[90px] px-3 py-2 font-semibold text-center" rowSpan={2}>
+            <th className={`${BREAKDOWN_QTR_SECTION_CELL} px-2 py-2 pr-3 text-right font-semibold`} rowSpan={2}>
               Ach.
             </th>
           </tr>
-          <tr className="bg-slate-50 text-left text-[10px] text-slate-600">
+          <tr className="bg-slate-50 text-[10px] text-slate-600">
             {quarterMonthKeys.map((mk) => (
               <React.Fragment key={`${mk}-sub`}>
-                <th className="w-[110px] px-3 py-2 font-semibold text-center border-l border-slate-300">Target</th>
-                <th className="w-[110px] px-3 py-2 font-semibold text-center">Actual</th>
-                <th className="w-[110px] px-3 py-2 font-semibold text-center border-r border-slate-300">Diff</th>
+                <th className={`${BREAKDOWN_NUM_HEAD} border-l border-slate-300`}>Target</th>
+                <th className={BREAKDOWN_NUM_HEAD}>Actual</th>
+                <th className={`${BREAKDOWN_NUM_HEAD} border-r border-slate-300`}>Diff</th>
               </React.Fragment>
             ))}
           </tr>
@@ -364,7 +441,10 @@ function QuarterlyClientBreakdownTable({
 
               return (
                 <tr key={row.clientName} className="border-t border-slate-200 text-[11px] text-slate-700">
-                  <td className="px-3 py-2 font-semibold text-slate-900 truncate" title={row.clientName}>
+                  <td
+                    className="max-w-[96px] px-2 py-2 font-semibold text-slate-900 truncate"
+                    title={row.clientName}
+                  >
                     {row.clientName}
                   </td>
                   {quarterMonthKeys.map((mk) => {
@@ -375,31 +455,33 @@ function QuarterlyClientBreakdownTable({
                       d > 0 ? "text-emerald-700" : d < 0 ? "text-rose-700" : "text-slate-700";
                     return (
                       <React.Fragment key={`${row.clientName}-${mk}-tri`}>
-                        <td className="px-3 py-2 tabular-nums text-center border-l border-slate-300">
+                        <td className={`${BREAKDOWN_NUM_CELL} border-l border-slate-300`}>
                           {formatRevenueUSD(t)}
                         </td>
-                        <td className="px-3 py-2 tabular-nums text-center">{formatRevenueUSD(a)}</td>
+                        <td className={BREAKDOWN_NUM_CELL}>{formatRevenueUSD(a)}</td>
                         <td
-                          className={`px-3 py-2 tabular-nums text-center font-semibold border-r border-slate-300 ${diffTone}`}
+                          className={`${BREAKDOWN_NUM_CELL} font-semibold border-r border-slate-300 ${diffTone}`}
                         >
                           {formatRevenueUSD(d)}
                         </td>
                       </React.Fragment>
                     );
                   })}
-                  <td className="px-3 py-2 tabular-nums text-center font-semibold border-l border-slate-300">
+                  <td className={`${BREAKDOWN_NUM_CELL} ${BREAKDOWN_QTR_SECTION_START} font-semibold`}>
                     {formatRevenueUSD(qTarget)}
                   </td>
-                  <td className="px-3 py-2 tabular-nums text-center font-semibold">
+                  <td className={`${BREAKDOWN_NUM_CELL} ${BREAKDOWN_QTR_SECTION_CELL} font-semibold`}>
                     {formatRevenueUSD(qActual)}
                   </td>
-                  <td className="px-3 py-2 tabular-nums text-center font-semibold">{safePct(ach)}</td>
+                  <td className={`${BREAKDOWN_NUM_CELL} ${BREAKDOWN_QTR_SECTION_CELL} pr-3 font-semibold`}>
+                    {safePct(ach)}
+                  </td>
                 </tr>
               );
             })}
 
           <tr className="border-t border-slate-300 bg-slate-50 text-[11px]">
-            <td className="px-3 py-2 font-bold text-slate-900">TOTAL</td>
+            <td className="max-w-[96px] px-2 py-2 font-bold text-slate-900">TOTAL</td>
             {quarterMonthKeys.map((mk) => {
               const t = rowsForPm.reduce((acc, r) => acc + (r.months[mk]?.target ?? 0), 0);
               const a = rowsForPm.reduce((acc, r) => acc + (r.months[mk]?.actual ?? 0), 0);
@@ -408,31 +490,30 @@ function QuarterlyClientBreakdownTable({
                 d > 0 ? "text-emerald-700" : d < 0 ? "text-rose-700" : "text-slate-900";
               return (
                 <React.Fragment key={`${mk}-tot-tri`}>
-                  <td className="px-3 py-2 tabular-nums text-center font-bold text-slate-900 border-l border-slate-300">
+                  <td className={`${BREAKDOWN_NUM_CELL} font-bold text-slate-900 border-l border-slate-300`}>
                     {formatRevenueUSD(t)}
                   </td>
-                  <td className="px-3 py-2 tabular-nums text-center font-bold text-slate-900">
+                  <td className={`${BREAKDOWN_NUM_CELL} font-bold text-slate-900`}>
                     {formatRevenueUSD(a)}
                   </td>
-                  <td className={`px-3 py-2 tabular-nums text-center font-bold border-r border-slate-300 ${diffTone}`}>
+                  <td className={`${BREAKDOWN_NUM_CELL} font-bold border-r border-slate-300 ${diffTone}`}>
                     {formatRevenueUSD(d)}
                   </td>
                 </React.Fragment>
               );
             })}
-            <td className="px-3 py-2 tabular-nums text-center font-bold text-slate-900 border-l border-slate-300">
+            <td className={`${BREAKDOWN_NUM_CELL} ${BREAKDOWN_QTR_SECTION_START} font-bold text-slate-900`}>
               {formatRevenueUSD(totals.target)}
             </td>
-            <td className="px-3 py-2 tabular-nums text-center font-bold text-slate-900">
+            <td className={`${BREAKDOWN_NUM_CELL} ${BREAKDOWN_QTR_SECTION_CELL} font-bold text-slate-900`}>
               {formatRevenueUSD(totals.actual)}
             </td>
-            <td className="px-3 py-2 tabular-nums text-center font-bold text-slate-900">
+            <td className={`${BREAKDOWN_NUM_CELL} ${BREAKDOWN_QTR_SECTION_CELL} pr-3 font-bold text-slate-900`}>
               {safePct(totalAchievement)}
             </td>
           </tr>
         </tbody>
-      </table>
-    </div>
+    </table>
   );
 }
 
@@ -494,7 +575,7 @@ function FullYearOteTable({
               )}
             </td>
             <td className="px-3 py-2 font-bold tabular-nums text-slate-900">
-              {isRelevant && fullYear.q4TrueUpEligible ? formatCurrency(Math.round(fullYear.q4TrueUpGBP), payoutCurrency) : "—"}
+              {isRelevant && fullYear.q4TrueUpEligible ? formatCurrency(Math.round(fullYear.q4TrueUp), payoutCurrency) : "—"}
             </td>
           </tr>
         </tbody>
@@ -543,17 +624,27 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
     return rows.filter((r) => r.partnerManager === pmFilter);
   }, [inputs, pmFilter]);
 
+  const bonusRules = React.useMemo(() => {
+    if (!pmFilter || pmFilter === "ALL") return DEFAULT_BONUS_RULES;
+    return bonusRulesForPartnerManager(pmFilter);
+  }, [pmFilter]);
+
   const { quarters, fullYear } = React.useMemo(() => {
     const monthKeys = inputs?.monthKeys ?? [];
-    return calcFullYearForPm({ quarter, monthKeys, rowsForPm: rowsForActivePm });
-  }, [quarter, inputs, rowsForActivePm]);
+    return calcFullYearForPm({ quarter, monthKeys, rowsForPm: rowsForActivePm, bonusRules });
+  }, [quarter, inputs, rowsForActivePm, bonusRules]);
 
   const activeQuarterKey = quarterIdToQuarterKey(quarter);
   const activeQuarterCalc = quarters[activeQuarterKey];
   const periodLabel = quarterIdToPeriodLabel(quarter);
   const quarterMonthKeys = (inputs?.monthKeys ?? []).filter((mk) => monthKeyToQuarterKey(mk) === activeQuarterKey);
   const isQ4 = activeQuarterKey === "Q4";
-  const payoutCurrency = payoutCurrencyForPartnerManager(pmFilter);
+  const payoutCurrency = React.useMemo(
+    () => payoutCurrencyForPartnerManager(pmFilter),
+    [pmFilter],
+  );
+  const includeNewBusinessWins =
+    !pmFilter || pmFilter === "ALL" ? true : showNewBusinessWinsPayout(pmFilter);
 
   const exportToExcel = () => {
     try {
@@ -576,8 +667,14 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
       sections.push(makeRow(["Target", activeQuarterCalc.target]));
       sections.push(makeRow(["Actual", activeQuarterCalc.actual]));
       sections.push(makeRow(["AchievementPct", activeQuarterCalc.achievement]));
-      sections.push(makeRow(["AboveThreshold80Pct", activeQuarterCalc.isAboveThreshold ? "yes" : "no"]));
-      sections.push(makeRow(["PayoutGBP", Math.round(activeQuarterCalc.payoutGBP)]));
+      sections.push(
+        makeRow([
+          `AboveThreshold${(bonusRules.thresholdPct * 100).toFixed(0)}Pct`,
+          activeQuarterCalc.isAboveThreshold ? "yes" : "no",
+        ]),
+      );
+      sections.push(makeRow([`QuarterlyOte_${payoutCurrency}`, bonusRules.quarterlyOte]));
+      sections.push(makeRow([`Payout_${payoutCurrency}`, Math.round(activeQuarterCalc.payout)]));
       sections.push("");
 
       sections.push("Full year On-Target-Earnings (OTE)");
@@ -589,11 +686,13 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
       sections.push(makeRow(["FY_Actual", isQ4 ? fullYear.fullYearActual : "—"]));
       sections.push(makeRow(["FY_AchievementPct", isQ4 ? fullYear.fullYearAchievement : "—"]));
       sections.push(makeRow(["FY_TargetMet", isQ4 ? (fullYear.fullYearTargetMet ? "yes" : "no") : "—"]));
-      sections.push(makeRow(["Q4_TrueUpGBP", isQ4 ? Math.round(fullYear.q4TrueUpGBP) : "—"]));
+      sections.push(makeRow([`Q4_TrueUp_${payoutCurrency}`, isQ4 ? Math.round(fullYear.q4TrueUp) : "—"]));
       sections.push("");
 
-      sections.push("New Business Wins");
-      sections.push(makeRow(["Status", "No data yet"]));
+      if (includeNewBusinessWins) {
+        sections.push("New Business Wins");
+        sections.push(makeRow(["Status", "No data yet"]));
+      }
 
       const csv = sections.join("\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -728,26 +827,28 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
             <div className="grid gap-2 sm:grid-cols-1">
               <SummaryRow
                 label="1) Quarterly OTE payout"
-                value={formatCurrency(Math.round(activeQuarterCalc.payoutGBP), payoutCurrency)}
+                value={formatCurrency(Math.round(activeQuarterCalc.payout), payoutCurrency)}
                 sectionId="quarterly-ote"
               />
               <SummaryRow
                 label="2) Full year OTE payout"
-                value={isQ4 ? formatCurrency(Math.round(fullYear.q4TrueUpGBP), payoutCurrency) : "—"}
+                value={isQ4 ? formatCurrency(Math.round(fullYear.q4TrueUp), payoutCurrency) : "—"}
                 sectionId="full-year-ote"
               />
-              <SummaryRow
-                label="3) New Business Wins payout"
-                value="—"
-                sectionId="new-business-wins"
-              />
+              {includeNewBusinessWins ? (
+                <SummaryRow
+                  label="3) New Business Wins payout"
+                  value="—"
+                  sectionId="new-business-wins"
+                />
+              ) : null}
             </div>
 
             <div className="mt-3 border-t border-slate-200 pt-3 text-sm font-bold text-slate-900">
               TOTAL PAYOUT&nbsp;
               <span className="font-extrabold">
                 {formatCurrency(
-                  Math.round(activeQuarterCalc.payoutGBP + (isQ4 ? fullYear.q4TrueUpGBP : 0)),
+                  Math.round(activeQuarterCalc.payout + (isQ4 ? fullYear.q4TrueUp : 0)),
                   payoutCurrency,
                 )}
               </span>
@@ -758,7 +859,11 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
         {showAllSections && (
           <>
             <Section id="quarterly-ote" title="1) QUARTERLY ON-TARGET-EARNINGS (OTE)">
-              <OteQuarterTable calc={activeQuarterCalc} payoutCurrency={payoutCurrency} />
+              <OteQuarterTable
+                calc={activeQuarterCalc}
+                payoutCurrency={payoutCurrency}
+                thresholdPct={bonusRules.thresholdPct}
+              />
               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -774,7 +879,7 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
                   </div>
                 </div>
 
-                <div className="w-full overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                <div className="w-full max-w-full overflow-x-auto rounded-xl border border-slate-200 bg-white">
                   <QuarterlyClientBreakdownTable
                     quarter={quarter}
                     monthKeys={inputs?.monthKeys ?? []}
@@ -788,7 +893,9 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
               </div>
 
               <div className="mt-3 text-xs text-slate-600">
-                Result is linear above 80%. Q1–Q3 are capped at 100% of OTE. Q4 is uncapped and may trigger retrospective true-up if full-year target is met.
+                Result is linear above {(bonusRules.thresholdPct * 100).toFixed(0)}%. Quarterly OTE is{" "}
+                {formatCurrency(bonusRules.quarterlyOte, payoutCurrency)}. Q1–Q3 are capped at 100% of OTE. Q4 is
+                uncapped and may trigger retrospective true-up if full-year target is met.
               </div>
             </Section>
 
@@ -801,11 +908,13 @@ export function PartnerManagementBonusStatementTemplate({ quarter }: { quarter: 
               <FullYearOteTable fullYear={fullYear} isRelevant={isQ4} payoutCurrency={payoutCurrency} />
             </Section>
 
-            <Section id="new-business-wins" title="3) NEW BUSINESS WINS">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                No data yet. This section will be wired once you provide the new New Business Wins data structure.
-              </div>
-            </Section>
+            {includeNewBusinessWins ? (
+              <Section id="new-business-wins" title="3) NEW BUSINESS WINS">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  No data yet. This section will be wired once you provide the new New Business Wins data structure.
+                </div>
+              </Section>
+            ) : null}
           </>
         )}
 
